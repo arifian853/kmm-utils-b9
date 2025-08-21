@@ -3,6 +3,9 @@ import { motion } from 'framer-motion';
 import { Upload, Users, CheckCircle, XCircle, Copy, Loader2, AlertCircle } from 'lucide-react';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import Papa from 'papaparse';
+// import { getEmbeddings, cosineSim, topKCandidates, CandidateMatch } from '../../utils/embeddings';
+// import { computeChecksum, loadCachedEmbeddings, saveCachedEmbeddings } from '../../utils/cache';
+// import { adjudicateWithGemini, AiAdjudication } from '../../utils/ai_match';
 
 // TypeScript Interfaces
 interface MenteeData {
@@ -23,6 +26,11 @@ interface AttendanceResult {
   durasi: number;
   status: 0 | 1;
   matchedName?: string;
+  matchMeta?: {
+    source: "semantic" | "ai" | "rule" | "none";
+    score?: number;
+    confidence?: number;
+  };
 }
 
 interface UploadCardProps {
@@ -79,7 +87,7 @@ const UploadCard: React.FC<UploadCardProps> = ({ onFileUpload, isProcessing, loa
         </div>
         <h3 className="text-xl font-semibold text-gray-100 mb-2">Upload File CSV Zoom</h3>
         <p className="text-gray-400 mb-6">Upload file participants dari Zoom untuk memproses absensi</p>
-        
+
         {isProcessing && (
           <div className="mb-6">
             <div className="flex items-center justify-center space-x-2 mb-2">
@@ -88,15 +96,15 @@ const UploadCard: React.FC<UploadCardProps> = ({ onFileUpload, isProcessing, loa
             </div>
             <p className="text-sm text-gray-400 mb-3">{loadingMessage}</p>
             <div className="w-full bg-gray-700 rounded-full h-2">
-              <div 
-                className="bg-teal-500 h-2 rounded-full transition-all duration-300 ease-out" 
+              <div
+                className="bg-teal-500 h-2 rounded-full transition-all duration-300 ease-out"
                 style={{ width: `${Math.min(progress, 100)}%` }}
               ></div>
             </div>
             <p className="text-xs text-gray-500 mt-1">{Math.round(progress)}%</p>
           </div>
         )}
-        
+
         <label className="relative cursor-pointer">
           <input
             type="file"
@@ -106,13 +114,12 @@ const UploadCard: React.FC<UploadCardProps> = ({ onFileUpload, isProcessing, loa
             disabled={isProcessing}
           />
           <motion.div
-            whileHover={!isProcessing ? { scale: 1.05 } : {}}
+            whileHover={!isProcessing ? { scale: 0.99 } : {}}
             whileTap={!isProcessing ? { scale: 0.95 } : {}}
-            className={`px-6 py-3 rounded-lg font-medium transition-all duration-300 ${
-              isProcessing 
-                ? 'bg-gray-600 text-gray-400 cursor-not-allowed' 
-                : 'bg-teal-500 text-white hover:bg-teal-600'
-            }`}
+            className={`px-6 py-3 rounded-lg font-medium transition-all duration-300 ${isProcessing
+              ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
+              : 'bg-teal-500 text-white hover:bg-teal-600'
+              }`}
           >
             {isProcessing ? 'Processing...' : 'Pilih File CSV'}
           </motion.div>
@@ -190,7 +197,7 @@ const AttendanceTable: React.FC<AttendanceTableProps> = ({ results, onCopyBinary
           <span>Copy Binary</span>
         </motion.button>
       </div>
-      
+
       <div className="overflow-x-auto">
         <table className="w-full">
           <thead className="bg-gray-700/50">
@@ -200,6 +207,7 @@ const AttendanceTable: React.FC<AttendanceTableProps> = ({ results, onCopyBinary
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Mentor</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Durasi (menit)</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Status</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Match Source</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Binary</th>
             </tr>
           </thead>
@@ -228,16 +236,29 @@ const AttendanceTable: React.FC<AttendanceTableProps> = ({ results, onCopyBinary
                     ) : (
                       <XCircle size={16} className="text-red-400" />
                     )}
-                    <span className={`text-sm font-medium ${
-                      result.status === 1 ? 'text-green-400' : 'text-red-400'
-                    }`}>
+                    <span className={`text-sm font-medium ${result.status === 1 ? 'text-green-400' : 'text-red-400'
+                      }`}>
                       {result.status === 1 ? 'Hadir' : 'Alpha'}
                     </span>
                   </div>
                 </td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm font-mono text-gray-300">
-                  {result.status}
+                <td className="px-6 py-4 whitespace-nowrap text-xs text-gray-400">
+                  {(() => {
+                    const meta = result.matchMeta; // type: {source: ...; score?: number; confidence?: number} | undefined
+                    const score: number | undefined = meta?.score;
+                    const conf: number | undefined = meta?.confidence;
+
+                    return (
+                      <>
+                        {meta?.source ?? 'none'}
+                        {typeof score === 'number' ? <div>Score: {score.toFixed(2)}</div> : null}
+                        {typeof conf === 'number' ? <div>Conf: {conf.toFixed(2)}</div> : null}
+                      </>
+                    );
+                  })()}
                 </td>
+
+
               </motion.tr>
             ))}
           </tbody>
@@ -262,53 +283,53 @@ const normalizeString = (str: string): string => {
 const extractNameVariations = (fullName: string): string[] => {
   const variations: string[] = [];
   const normalized = normalizeString(fullName);
-  
+
   // Add original normalized name
   variations.push(normalized);
-  
+
   // Split by common separators and extract parts
-  const parts = fullName.split(/[_\-\(\)\s]+/).filter(part => part.length > 0);
-  
+  const parts = fullName.split(/[_\-\s]+/).filter(part => part.length > 0);
+
   parts.forEach(part => {
     const normalizedPart = normalizeString(part);
     if (normalizedPart.length > 2) {
       variations.push(normalizedPart);
     }
   });
-  
+
   // Extract name before program mention
   const beforeProgram = fullName.split(/_(web|ai|artificial)/i)[0];
   if (beforeProgram !== fullName) {
     variations.push(normalizeString(beforeProgram));
   }
-  
+
   // Extract name from parentheses
   const parenthesesMatch = fullName.match(/\(([^)]+)\)/);
   if (parenthesesMatch) {
     variations.push(normalizeString(parenthesesMatch[1]));
   }
-  
+
   return [...new Set(variations)]; // Remove duplicates
 };
 
 const calculateNameSimilarity = (name1: string, name2: string): number => {
   const norm1 = normalizeString(name1);
   const norm2 = normalizeString(name2);
-  
+
   // Exact match
   if (norm1 === norm2) return 1.0;
-  
+
   // Check if one contains the other
   if (norm1.includes(norm2) || norm2.includes(norm1)) {
     return 0.8;
   }
-  
+
   // Split into words and check word matches
   const words1 = norm1.split(' ').filter(w => w.length > 2);
   const words2 = norm2.split(' ').filter(w => w.length > 2);
-  
+
   if (words1.length === 0 || words2.length === 0) return 0;
-  
+
   let matchingWords = 0;
   words1.forEach(word1 => {
     words2.forEach(word2 => {
@@ -317,16 +338,18 @@ const calculateNameSimilarity = (name1: string, name2: string): number => {
       }
     });
   });
-  
+
   return matchingWords / Math.max(words1.length, words2.length);
 };
 
-// Tambahkan interface ini di bagian atas file (setelah interface yang sudah ada)
 interface NameMatch {
   name: string;
   score: number;
 }
 
+// =================================================================
+// KODE YANG DIPERBAIKI ADA DI FUNGSI DI BAWAH INI
+// =================================================================
 const findBestMatch = (zoomName: string, menteeNames: string[]): NameMatch | null => {
   if (menteeNames.length === 0) {
     return null;
@@ -334,32 +357,29 @@ const findBestMatch = (zoomName: string, menteeNames: string[]): NameMatch | nul
 
   const zoomVariations = extractNameVariations(zoomName);
   let bestMatch: NameMatch | null = null;
-  
-  menteeNames.forEach((menteeName: string) => {
+
+  // Menggunakan loop for...of untuk menghindari masalah 'never' type pada TypeScript
+  for (const menteeName of menteeNames) {
     const menteeVariations = extractNameVariations(menteeName);
-    
-    // Check all combinations of variations
-    zoomVariations.forEach((zoomVar: string) => {
-      menteeVariations.forEach((menteeVar: string) => {
-        const score: number = calculateNameSimilarity(zoomVar, menteeVar);
+
+    for (const zoomVar of zoomVariations) {
+      for (const menteeVar of menteeVariations) {
+        const score = calculateNameSimilarity(zoomVar, menteeVar);
+        
         if (bestMatch === null || score > bestMatch.score) {
-          bestMatch = { name: menteeName, score } as NameMatch;
+          bestMatch = { name: menteeName, score };
         }
-      });
-    });
-    
-    // Also check direct similarity
-    const directScore: number = calculateNameSimilarity(zoomName, menteeName);
-    if (bestMatch === null || directScore > bestMatch.score) {
-      bestMatch = { name: menteeName, score: directScore } as NameMatch;
+      }
     }
-  });
-  
-  // Only return if confidence is above threshold
-  if (bestMatch !== null && bestMatch.score >= 0.6) {
-    return bestMatch;
+
+    const directScore = calculateNameSimilarity(zoomName, menteeName);
+    if (bestMatch === null || directScore > bestMatch.score) {
+      bestMatch = { name: menteeName, score: directScore };
+    }
   }
-  return null;
+
+  // Baris ini sekarang aman dan tidak akan error
+  return (bestMatch && bestMatch.score >= 0.75) ? bestMatch : null;
 };
 
 export const Absensi: React.FC = () => {
@@ -375,13 +395,13 @@ export const Absensi: React.FC = () => {
     try {
       setLoadingMessage('Memuat data mentee...');
       setProgress(5);
-      
+
       const response = await fetch('/src/utils/DataMentee.csv');
       if (!response.ok) {
         throw new Error(`Failed to fetch mentee data: ${response.status} ${response.statusText}`);
       }
       const csvText = await response.text();
-      
+
       return new Promise<MenteeData[]>((resolve, reject) => {
         Papa.parse<MenteeData>(csvText, {
           header: true,
@@ -389,7 +409,7 @@ export const Absensi: React.FC = () => {
           transformHeader: (header: string): string => {
             const headerMap: Record<string, string> = {
               'Nama': 'nama',
-              'Program': 'program', 
+              'Program': 'program',
               'Mentor': 'mentor'
             };
             return headerMap[header] || header.toLowerCase();
@@ -403,7 +423,7 @@ export const Absensi: React.FC = () => {
               resolve(results.data);
             }
           },
-          error: (error: Error, file?: string | Papa.LocalFile) => {
+          error: (error: Error) => {
             reject(new Error(`CSV parsing failed: ${error.message || 'Unknown parsing error'}`));
           }
         });
@@ -417,29 +437,29 @@ export const Absensi: React.FC = () => {
 
   // Enhanced batch name matching using Google Gemini AI
   const batchMatchNamesWithAI = useCallback(async (
-    unmatchedZoomNames: string[], 
+    unmatchedZoomNames: string[],
     menteeNames: string[]
   ): Promise<Map<string, string | null>> => {
     const results = new Map<string, string | null>();
     const batchSize = 3; // Further reduced batch size
     const delayBetweenBatches = 3000; // 3 second delay
-    
+
     try {
       const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
       if (!apiKey) {
         throw new Error('Google Gemini API key not found in environment variables (VITE_GEMINI_API_KEY)');
       }
-      
+
       const genAI = new GoogleGenerativeAI(apiKey);
       const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' });
-      
+
       for (let i = 0; i < unmatchedZoomNames.length; i += batchSize) {
         const batch = unmatchedZoomNames.slice(i, i + batchSize);
         const batchProgress = ((i / unmatchedZoomNames.length) * 30) + 50;
-        
-        setLoadingMessage(`AI name matching (batch ${Math.floor(i/batchSize) + 1}/${Math.ceil(unmatchedZoomNames.length/batchSize)})...`);
+
+        setLoadingMessage(`AI name matching (batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(unmatchedZoomNames.length / batchSize)})...`);
         setProgress(batchProgress);
-        
+
         try {
           const prompt = `
 You are an expert at matching Indonesian names. Given these Zoom participant names and mentee names, find the best matches.
@@ -469,19 +489,19 @@ Return ONLY the JSON object:`;
 
           const result = await model.generateContent(prompt);
           const responseText = result.response.text().trim();
-          
+
           let batchResults: Record<string, string | null>;
           try {
             const cleanedResponse = responseText.replace(/```json\n?|```\n?/g, '').trim();
             batchResults = JSON.parse(cleanedResponse);
-          } catch (parseError) {
+          } catch {
             console.warn('Failed to parse AI response:', responseText);
             batchResults = {};
             batch.forEach(name => {
               batchResults[name] = null;
             });
           }
-          
+
           // Validate and store results
           Object.entries(batchResults).forEach(([zoomName, matchedName]) => {
             if (matchedName && menteeNames.includes(matchedName)) {
@@ -490,26 +510,26 @@ Return ONLY the JSON object:`;
               results.set(zoomName, null);
             }
           });
-          
+
         } catch (batchError) {
-          console.warn(`AI batch failed for batch ${Math.floor(i/batchSize) + 1}:`, batchError);
+          console.warn(`AI batch failed for batch ${Math.floor(i / batchSize) + 1}:`, batchError);
           batch.forEach(name => {
             results.set(name, null);
           });
-          
+
           if (batchError instanceof Error && batchError.message.includes('429')) {
             setLoadingMessage('Rate limit reached, waiting...');
             await delay(8000); // 8 second delay for rate limiting
           }
         }
-        
+
         if (i + batchSize < unmatchedZoomNames.length) {
           await delay(delayBetweenBatches);
         }
       }
-      
+
       return results;
-      
+
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown AI error';
       console.error('AI batch matching error:', error);
@@ -523,12 +543,12 @@ Return ONLY the JSON object:`;
     setError(null);
     setProgress(0);
     setLoadingMessage('Memulai proses...');
-    
+
     try {
       const menteeData = await loadMenteeData();
       setLoadingMessage(`Berhasil memuat ${menteeData.length} data mentee. Memproses file CSV...`);
       setProgress(15);
-      
+
       const zoomData = await new Promise<ZoomParticipant[]>((resolve, reject) => {
         Papa.parse<ZoomParticipant>(file, {
           header: true,
@@ -555,34 +575,34 @@ Return ONLY the JSON object:`;
           }
         });
       });
-      
+
       setLoadingMessage(`Berhasil memproses ${zoomData.length} data peserta Zoom. Mencocokkan nama...`);
       setProgress(25);
-      
+
       const attendanceResults: AttendanceResult[] = [];
       const menteeNames = menteeData.map(m => m.nama);
       const zoomNameToParticipant = new Map<string, ZoomParticipant>();
-      
+
       zoomData.forEach(participant => {
         zoomNameToParticipant.set(participant.nama, participant);
       });
-      
+
       setLoadingMessage('Melakukan pencocokan nama dengan algoritma enhanced...');
       setProgress(30);
-      
+
       // Enhanced exact matching
       const matchedZoomNames = new Set<string>();
-      
+
       menteeData.forEach((mentee, index) => {
         const progressPercent = 30 + ((index / menteeData.length) * 15);
         setProgress(progressPercent);
-        
+
         let matchedParticipant: ZoomParticipant | null = null;
         let matchedZoomName: string | null = null;
-        
+
         // Try enhanced matching algorithm
         const bestMatch = findBestMatch(mentee.nama, Array.from(zoomNameToParticipant.keys()));
-        
+
         if (bestMatch && bestMatch.score >= 0.7) {
           matchedParticipant = zoomNameToParticipant.get(bestMatch.name) || null;
           matchedZoomName = bestMatch.name;
@@ -590,12 +610,12 @@ Return ONLY the JSON object:`;
             matchedZoomNames.add(bestMatch.name);
           }
         }
-        
+
         // Fallback to simple contains check
         if (!matchedParticipant) {
           for (const [zoomName, participant] of zoomNameToParticipant.entries()) {
             if (matchedZoomNames.has(zoomName)) continue;
-            
+
             const similarity = calculateNameSimilarity(mentee.nama, zoomName);
             if (similarity >= 0.6) {
               matchedParticipant = participant;
@@ -605,10 +625,10 @@ Return ONLY the JSON object:`;
             }
           }
         }
-        
+
         const durasi = matchedParticipant?.durasi || 0;
         const status: 0 | 1 = durasi >= 30 ? 1 : 0;
-        
+
         attendanceResults.push({
           mentee,
           durasi,
@@ -616,42 +636,42 @@ Return ONLY the JSON object:`;
           matchedName: matchedZoomName && matchedZoomName !== mentee.nama ? matchedZoomName : undefined
         });
       });
-      
+
       setProgress(45);
-      
+
       // Collect truly unmatched zoom names for AI processing
       const unmatchedZoomNames = Array.from(zoomNameToParticipant.keys())
         .filter(name => !matchedZoomNames.has(name))
         .filter(name => {
           // Filter out obvious non-mentee entries
           const normalized = normalizeString(name);
-          return !normalized.includes('infinite learning') && 
-                 !normalized.includes('il ') &&
-                 normalized.length > 3;
+          return !normalized.includes('infinite learning') &&
+            !normalized.includes('il ') &&
+            normalized.length > 3;
         });
-      
+
       // AI matching for remaining unmatched names
       if (unmatchedZoomNames.length > 0) {
         setLoadingMessage(`Menggunakan AI untuk ${unmatchedZoomNames.length} nama yang belum cocok...`);
-        
+
         try {
           const aiMatches = await batchMatchNamesWithAI(unmatchedZoomNames, menteeNames);
-          
+
           setLoadingMessage('Menerapkan hasil AI matching...');
           setProgress(80);
-          
+
           // Apply AI matches to unmatched mentees
           aiMatches.forEach((matchedMenteeName, zoomName) => {
             if (matchedMenteeName) {
               const zoomParticipant = zoomNameToParticipant.get(zoomName);
-              const resultIndex = attendanceResults.findIndex(r => 
+              const resultIndex = attendanceResults.findIndex(r =>
                 r.mentee.nama === matchedMenteeName && r.durasi === 0
               );
-              
+
               if (zoomParticipant && resultIndex !== -1) {
                 const durasi = zoomParticipant.durasi || 0;
                 const status: 0 | 1 = durasi >= 30 ? 1 : 0;
-                
+
                 attendanceResults[resultIndex] = {
                   ...attendanceResults[resultIndex],
                   durasi,
@@ -666,24 +686,24 @@ Return ONLY the JSON object:`;
           setError(`Warning: AI matching failed - ${aiError instanceof Error ? aiError.message : 'Unknown AI error'}\n\nContinuing with enhanced algorithm matches only.`);
         }
       }
-      
+
       setLoadingMessage('Menghitung statistik...');
       setProgress(90);
-      
+
       const total = attendanceResults.length;
       const hadir = attendanceResults.filter(r => r.status === 1).length;
       const alpha = total - hadir;
-      
+
       setAttendanceResults(attendanceResults);
       setStats({ total, hadir, alpha });
       setLoadingMessage('Selesai!');
       setProgress(100);
-      
+
       setTimeout(() => {
         setLoadingMessage('');
         setProgress(0);
       }, 1500);
-      
+
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
       const fullError = `File Processing Error: ${errorMessage}\n\nStack trace:\n${error instanceof Error ? error.stack || 'No stack trace available' : 'No stack trace available'}`;
@@ -718,7 +738,7 @@ Return ONLY the JSON object:`;
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900" style={{ backgroundColor: '#222831' }}>
       {/* Header */}
-      <motion.header 
+      <motion.header
         initial={{ opacity: 0, y: -20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.6 }}
@@ -727,7 +747,7 @@ Return ONLY the JSON object:`;
       >
         <div className="max-w-6xl mx-auto px-6 py-6">
           <div className="flex items-center space-x-4">
-            <motion.div 
+            <motion.div
               initial={{ scale: 0 }}
               animate={{ scale: 1 }}
               transition={{ duration: 0.5, delay: 0.2 }}
@@ -763,9 +783,9 @@ Return ONLY the JSON object:`;
 
         {/* Upload Section */}
         <div className="mb-8">
-          <UploadCard 
-            onFileUpload={handleFileUpload} 
-            isProcessing={isProcessing} 
+          <UploadCard
+            onFileUpload={handleFileUpload}
+            isProcessing={isProcessing}
             loadingMessage={loadingMessage}
             progress={progress}
           />
